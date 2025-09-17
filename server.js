@@ -75,3 +75,18 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
 });
+
+
+app.get("/list", async (req, res) => {
+  try {
+    const folderId = process.env.GOOGLE_DRIVE_FOLDER_ID;
+    const list = await drive.files.list({
+      q: `'${folderId}' in parents`,
+      fields: "files(id, name)"
+    });
+    res.json(list.data.files);
+  } catch (err) {
+    console.error("❌ Error listing files:", err.message);
+    res.status(500).send(err.message);
+  }
+});
