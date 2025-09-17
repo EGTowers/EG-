@@ -3,12 +3,11 @@ import bodyParser from "body-parser";
 import { google } from "googleapis";
 import fetch from "node-fetch";
 import { Readable } from "stream";
-import path from "path";
 
 const app = express();
 app.use(bodyParser.json());
 
-// טוענים את ההרשאות מתוך משתנה הסביבה
+// טוענים הרשאות מגוגל
 const credentials = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT);
 
 const auth = new google.auth.GoogleAuth({
@@ -18,15 +17,20 @@ const auth = new google.auth.GoogleAuth({
 
 const drive = google.drive({ version: "v3", auth });
 
-// נקודת קצה להעלאה
+// דף בית לבדיקה
+app.get("/", (req, res) => {
+  res.send("🎉 השרת פעיל! שלח בקשה ל־/upload כדי להעלות קובץ ל-Drive.");
+});
+
+// נקודת קצה להעלאה (POST JSON)
 app.post("/upload", async (req, res) => {
   const { url, folderId } = req.body;
 
   if (!url) {
-    return res.status(400).json({ success: false, error: "חסר קישור להורדה" });
+    return res.status(400).json({ success: false, error: "❌ חסר קישור להורדה" });
   }
 
-  // מחזירים תגובה מיידית ללקוח
+  // מחזירים תגובה מהירה ללקוח
   res.json({ success: true, message: "✅ הקישור התקבל, מתחילים בתהליך..." });
 
   try {
@@ -35,39 +39,23 @@ app.post("/upload", async (req, res) => {
     const response = await fetch(url);
     if (!response.ok) throw new Error(`שגיאה בהורדה: ${response.statusText}`);
 
-    // שם קובץ מה-URL או ברירת מחדל
-    let fileName = path.basename(new URL(url).pathname) || "file_" + Date.now();
-    if (!fileName || fileName.trim() === "") fileName = "file_" + Date.now();
+    const buffer = await response.buffer();
+    console.log(`📏 גודל קובץ: ${buffer.length} bytes`);
 
     const targetFolder = folderId || process.env.GOOGLE_DRIVE_FOLDER_ID;
 
-    // קביעת מצב לפי גודל
-    const contentLength = parseInt(response.headers.get("content-length") || "0", 10);
-    const isSmallFile = contentLength > 0 && contentLength < 20 * 1024 * 1024; // פחות מ-20MB
-
-    console.log(`📏 גודל קובץ: ${contentLength} bytes (${isSmallFile ? "קטן - buffer" : "גדול - stream"})`);
-
-    let media;
-    if (isSmallFile) {
-      // טעינה מלאה לזיכרון
-      const buffer = await response.arrayBuffer();
-      media = {
-        mimeType: response.headers.get("content-type") || "application/octet-stream",
-        body: Buffer.from(buffer),
-      };
-    } else {
-      // הורדה כ-stream
-      const stream = Readable.fromWeb(response.body);
-      media = {
-        mimeType: response.headers.get("content-type") || "application/octet-stream",
-        body: stream,
-      };
-    }
-
     console.log("📤 מעלה ל-Drive...");
     const fileMetadata = {
-      name: fileName,
+      name: "file_" + Date.now(),
       parents: [targetFolder],
+    };
+
+    // הופכים את ה־Buffer לזרם
+    const stream = Readable.from(buffer);
+
+    const media = {
+      mimeType: response.headers.get("content-type") || "application/octet-stream",
+      body: stream,
     };
 
     const uploadResponse = await drive.files.create({
@@ -76,7 +64,7 @@ app.post("/upload", async (req, res) => {
       fields: "id, name",
     });
 
-    console.log("✅ הועלה בהצלחה:", uploadResponse.data);
+    console.log("✅ הועלה בהצלחה ל-Drive:", uploadResponse.data);
   } catch (err) {
     console.error("❌ שגיאה בתהליך:", err.message);
   }
