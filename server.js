@@ -37,6 +37,32 @@ app.get("/list", async (req, res) => {
   }
 });
 
+// נקודת בדיקה: האם ה-Service Account רואה את התיקייה
+app.get("/test-folder", async (req, res) => {
+  try {
+    const folderId = process.env.GOOGLE_DRIVE_FOLDER_ID;
+
+    // מנסים להביא את רשימת הקבצים בתיקייה
+    const list = await drive.files.list({
+      q: `'${folderId}' in parents`,
+      fields: "files(id, name)",
+      pageSize: 5
+    });
+
+    res.json({
+      success: true,
+      message: "✅ ה-Service Account הצליח לגשת לתיקייה",
+      files: list.data.files
+    });
+  } catch (err) {
+    console.error("❌ שגיאה בגישה לתיקייה:", err.message);
+    res.status(500).json({
+      success: false,
+      error: err.message
+    });
+  }
+});
+
 
 // נקודת קצה להעלאה (POST JSON)
 app.post("/upload", async (req, res) => {
@@ -91,5 +117,6 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
 });
+
 
 
