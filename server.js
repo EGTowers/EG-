@@ -3,6 +3,7 @@ import bodyParser from "body-parser";
 import { google } from "googleapis";
 import fetch from "node-fetch";
 import { Readable } from "stream";
+import ytdl from "ytdl-core";   // 🆕 ספריה להורדת יוטיוב
 
 const app = express();
 app.use(bodyParser.json());
@@ -19,7 +20,7 @@ const drive = google.drive({ version: "v3", auth });
 
 // דף בית לבדיקה
 app.get("/", (req, res) => {
-  res.send("🎉 השרת פעיל! שלח בקשה ל־/upload כדי להעלות קובץ ל-Drive.");
+  res.send("🎉 השרת פעיל! שלח בקשה ל־/upload כדי להעלות קובץ רגיל או וידאו מיוטיוב ל-Drive.");
 });
 
 // נקודת בדיקה: הצגת קבצים בתיקיה
@@ -29,9 +30,9 @@ app.get("/list", async (req, res) => {
     const list = await drive.files.list({
       q: `'${folderId}' in parents`,
       fields: "files(id, name)",
-      includeItemsFromAllDrives: true,   // 🚩 חובה בדרייב שיתופי
-      supportsAllDrives: true,           // 🚩 חובה בדרייב שיתופי
-      corpora: "allDrives",              // 🚩 חובה בדרייב שיתופי
+      includeItemsFromAllDrives: true,
+      supportsAllDrives: true,
+      corpora: "allDrives",
     });
     res.json(list.data.files);
   } catch (err) {
@@ -48,15 +49,15 @@ app.get("/test-folder", async (req, res) => {
       q: `'${folderId}' in parents`,
       fields: "files(id, name)",
       pageSize: 5,
-      includeItemsFromAllDrives: true,   // 🚩
-      supportsAllDrives: true,           // 🚩
-      corpora: "allDrives",              // 🚩
+      includeItemsFromAllDrives: true,
+      supportsAllDrives: true,
+      corpora: "allDrives",
     });
 
     res.json({
       success: true,
       message: "✅ ה-Service Account הצליח לגשת לתיקייה",
-      files: list.data.files
+      files: list.data.files,
     });
   } catch (err) {
     console.error("❌ שגיאה בגישה לתיקייה:", err.message);
@@ -64,7 +65,7 @@ app.get("/test-folder", async (req, res) => {
   }
 });
 
-// נקודת קצה להעלאה
+// נקודת קצה להעלאה (קבצים רגילים + יוטיוב)
 app.post("/upload", async (req, res) => {
   const { url, folderId } = req.body;
 
@@ -75,37 +76,62 @@ app.post("/upload", async (req, res) => {
   res.json({ success: true, message: "✅ הקישור התקבל, מתחילים בתהליך..." });
 
   try {
-    console.log("⏳ מוריד קובץ:", url);
-
-    const response = await fetch(url);
-    if (!response.ok) throw new Error(`שגיאה בהורדה: ${response.statusText}`);
-
-    const buffer = await response.buffer();
-    console.log(`📏 גודל קובץ: ${buffer.length} bytes`);
-
     const targetFolder = folderId || process.env.GOOGLE_DRIVE_FOLDER_ID;
 
-    console.log("📤 מעלה ל-Drive...");
-    const fileMetadata = {
-      name: "file_" + Date.now(),
-      parents: [targetFolder],
-    };
+    if (ytdl.validateURL(url)) {
+      // 🟡 הורדת סרטון מיוטיוב
+      console.log("⏳ מזהה קישור יוטיוב:", url);
 
-    const stream = Readable.from(buffer);
+      const info = await ytdl.getInfo(url);
+      const title = info.videoDetails.title.replace(/[^\w\s]/gi, "_");
 
-    const media = {
-      mimeType: response.headers.get("content-type") || "application/octet-stream",
-      body: stream,
-    };
+      const fileMetadata = {
+        name: `${title}.mp4`,
+        parents: [targetFolder],
+      };
 
-    const uploadResponse = await drive.files.create({
-      requestBody: fileMetadata,
-      media,
-      fields: "id, name",
-      supportsAllDrives: true,   // 🚩 חובה בדרייב שיתופי
-    });
+      const media = {
+        mimeType: "video/mp4",
+        body: ytdl(url, { quality: "highest" }),
+      };
 
-    console.log("✅ הועלה בהצלחה ל-Drive:", uploadResponse.data);
+      const uploadResponse = await drive.files.create({
+        requestBody: fileMetadata,
+        media,
+        fields: "id, name",
+        supportsAllDrives: true,
+      });
+
+      console.log("✅ סרטון מיוטיוב הועלה:", uploadResponse.data);
+    } else {
+      // 🟢 קובץ רגיל
+      console.log("⏳ מוריד קובץ:", url);
+
+      const response = await fetch(url);
+      if (!response.ok) throw new Error(`שגיאה בהורדה: ${response.statusText}`);
+
+      const buffer = await response.arrayBuffer();
+      const filename = "file_" + Date.now();
+
+      const fileMetadata = {
+        name: filename,
+        parents: [targetFolder],
+      };
+
+      const media = {
+        mimeType: response.headers.get("content-type") || "application/octet-stream",
+        body: Readable.from(Buffer.from(buffer)),
+      };
+
+      const uploadResponse = await drive.files.create({
+        requestBody: fileMetadata,
+        media,
+        fields: "id, name",
+        supportsAllDrives: true,
+      });
+
+      console.log("✅ קובץ רגיל הועלה:", uploadResponse.data);
+    }
   } catch (err) {
     console.error("❌ שגיאה בתהליך:", err.message);
   }
