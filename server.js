@@ -3,12 +3,12 @@ import bodyParser from "body-parser";
 import { google } from "googleapis";
 import fetch from "node-fetch";
 import { Readable } from "stream";
-import ytdl from "ytdl-core";   // 🆕 ספריה להורדת יוטיוב
+import ytdl from "ytdl-core";
 
 const app = express();
 app.use(bodyParser.json());
 
-// טוענים הרשאות מגוגל
+// --- הגדרות גוגל ---
 const credentials = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT);
 
 const auth = new google.auth.GoogleAuth({
@@ -18,33 +18,17 @@ const auth = new google.auth.GoogleAuth({
 
 const drive = google.drive({ version: "v3", auth });
 
-// דף בית לבדיקה
+// --- דף בית ---
 app.get("/", (req, res) => {
-  res.send("🎉 השרת פעיל! שלח בקשה ל־/upload כדי להעלות קובץ רגיל או וידאו מיוטיוב ל-Drive.");
+  res.send("🎉 השרת פעיל! שלח בקשה ל־/upload כדי להעלות קובץ או סרטון ל־Drive.");
 });
 
-// נקודת בדיקה: הצגת קבצים בתיקיה
-app.get("/list", async (req, res) => {
-  try {
-    const folderId = process.env.GOOGLE_DRIVE_FOLDER_ID;
-    const list = await drive.files.list({
-      q: `'${folderId}' in parents`,
-      fields: "files(id, name)",
-      includeItemsFromAllDrives: true,
-      supportsAllDrives: true,
-      corpora: "allDrives",
-    });
-    res.json(list.data.files);
-  } catch (err) {
-    console.error("❌ Error listing files:", err.message);
-    res.status(500).send(err.message);
-  }
-});
-
-// נקודת בדיקה: האם ה-Service Account רואה את התיקייה
+// --- בדיקת תיקייה ---
 app.get("/test-folder", async (req, res) => {
   try {
     const folderId = process.env.GOOGLE_DRIVE_FOLDER_ID;
+    console.log("🔎 בודק גישה לתיקייה:", folderId);
+
     const list = await drive.files.list({
       q: `'${folderId}' in parents`,
       fields: "files(id, name)",
@@ -56,21 +40,46 @@ app.get("/test-folder", async (req, res) => {
 
     res.json({
       success: true,
-      message: "✅ ה-Service Account הצליח לגשת לתיקייה",
+      message: "✅ ה־Service Account הצליח לגשת לתיקייה",
       files: list.data.files,
     });
   } catch (err) {
-    console.error("❌ שגיאה בגישה לתיקייה:", err.message);
+    console.error("❌ שגיאה בבדיקת תיקייה:", err.message);
     res.status(500).json({ success: false, error: err.message });
   }
 });
 
-// נקודת קצה להעלאה (קבצים רגילים + יוטיוב)
+// --- העלאה ל־Drive ---
+async function uploadToDrive(bufferOrStream, mimeType, folderId, fileName) {
+  console.log("📤 מעלה ל־Drive...");
+
+  const metadata = {
+    name: fileName || "file_" + Date.now(),
+    parents: [folderId],
+  };
+
+  const media = {
+    mimeType: mimeType || "application/octet-stream",
+    body: bufferOrStream,
+  };
+
+  const response = await drive.files.create({
+    requestBody: metadata,
+    media,
+    fields: "id, name",
+    supportsAllDrives: true,
+  });
+
+  console.log("✅ הועלה בהצלחה ל־Drive:", response.data);
+  return response.data;
+}
+
+// --- נקודת קצה להעלאה ---
 app.post("/upload", async (req, res) => {
   const { url, folderId } = req.body;
 
   if (!url) {
-    return res.status(400).json({ success: false, error: "❌ חסר קישור להורדה" });
+    return res.status(400).json({ success: false, error: "❌ חסר קישור" });
   }
 
   res.json({ success: true, message: "✅ הקישור התקבל, מתחילים בתהליך..." });
@@ -78,66 +87,43 @@ app.post("/upload", async (req, res) => {
   try {
     const targetFolder = folderId || process.env.GOOGLE_DRIVE_FOLDER_ID;
 
+    // בדיקה אם זה קישור YouTube
     if (ytdl.validateURL(url)) {
-      // 🟡 הורדת סרטון מיוטיוב
-      console.log("⏳ מזהה קישור יוטיוב:", url);
+      console.log("⏳ מזהה קישור YouTube:", url);
 
-      const info = await ytdl.getInfo(url);
-      const title = info.videoDetails.title.replace(/[^\w\s]/gi, "_");
+      try {
+        console.log("📥 מתחיל הורדה מ־YouTube...");
+        const stream = ytdl(url, { quality: "highest" });
 
-      const fileMetadata = {
-        name: `${title}.mp4`,
-        parents: [targetFolder],
-      };
+        const info = await ytdl.getInfo(url);
+        const title = info.videoDetails.title.replace(/[^\w\sא-ת.-]/g, "_");
 
-      const media = {
-        mimeType: "video/mp4",
-        body: ytdl(url, { quality: "highest" }),
-      };
-
-      const uploadResponse = await drive.files.create({
-        requestBody: fileMetadata,
-        media,
-        fields: "id, name",
-        supportsAllDrives: true,
-      });
-
-      console.log("✅ סרטון מיוטיוב הועלה:", uploadResponse.data);
+        await uploadToDrive(stream, "video/mp4", targetFolder, title + ".mp4");
+      } catch (err) {
+        console.error("❌ שגיאת YouTube:", err.message);
+      }
     } else {
-      // 🟢 קובץ רגיל
-      console.log("⏳ מוריד קובץ:", url);
+      console.log("⏳ מוריד קובץ רגיל:", url);
 
       const response = await fetch(url);
-      if (!response.ok) throw new Error(`שגיאה בהורדה: ${response.statusText}`);
+      if (!response.ok) throw new Error(`שגיאת הורדה: ${response.statusText}`);
 
-      const buffer = await response.arrayBuffer();
-      const filename = "file_" + Date.now();
+      const buffer = await response.buffer();
+      console.log(`📏 גודל קובץ: ${buffer.length} bytes`);
 
-      const fileMetadata = {
-        name: filename,
-        parents: [targetFolder],
-      };
+      const stream = Readable.from(buffer);
+      const mimeType = response.headers.get("content-type");
 
-      const media = {
-        mimeType: response.headers.get("content-type") || "application/octet-stream",
-        body: Readable.from(Buffer.from(buffer)),
-      };
-
-      const uploadResponse = await drive.files.create({
-        requestBody: fileMetadata,
-        media,
-        fields: "id, name",
-        supportsAllDrives: true,
-      });
-
-      console.log("✅ קובץ רגיל הועלה:", uploadResponse.data);
+      await uploadToDrive(stream, mimeType, targetFolder, "file_" + Date.now());
     }
+
+    console.log("🎉 התהליך הסתיים בהצלחה!");
   } catch (err) {
-    console.error("❌ שגיאה בתהליך:", err.message);
+    console.error("❌ שגיאה כללית בתהליך:", err.message);
   }
 });
 
-// מאזינים לשרת
+// --- מאזין לשרת ---
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
