@@ -22,13 +22,16 @@ app.get("/", (req, res) => {
   res.send("🎉 השרת פעיל! שלח בקשה ל־/upload כדי להעלות קובץ ל-Drive.");
 });
 
-
+// נקודת בדיקה: הצגת קבצים בתיקיה
 app.get("/list", async (req, res) => {
   try {
     const folderId = process.env.GOOGLE_DRIVE_FOLDER_ID;
     const list = await drive.files.list({
       q: `'${folderId}' in parents`,
-      fields: "files(id, name)"
+      fields: "files(id, name)",
+      includeItemsFromAllDrives: true,   // 🚩 חובה בדרייב שיתופי
+      supportsAllDrives: true,           // 🚩 חובה בדרייב שיתופי
+      corpora: "allDrives",              // 🚩 חובה בדרייב שיתופי
     });
     res.json(list.data.files);
   } catch (err) {
@@ -41,12 +44,13 @@ app.get("/list", async (req, res) => {
 app.get("/test-folder", async (req, res) => {
   try {
     const folderId = process.env.GOOGLE_DRIVE_FOLDER_ID;
-
-    // מנסים להביא את רשימת הקבצים בתיקייה
     const list = await drive.files.list({
       q: `'${folderId}' in parents`,
       fields: "files(id, name)",
-      pageSize: 5
+      pageSize: 5,
+      includeItemsFromAllDrives: true,   // 🚩
+      supportsAllDrives: true,           // 🚩
+      corpora: "allDrives",              // 🚩
     });
 
     res.json({
@@ -56,15 +60,11 @@ app.get("/test-folder", async (req, res) => {
     });
   } catch (err) {
     console.error("❌ שגיאה בגישה לתיקייה:", err.message);
-    res.status(500).json({
-      success: false,
-      error: err.message
-    });
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 
-
-// נקודת קצה להעלאה (POST JSON)
+// נקודת קצה להעלאה
 app.post("/upload", async (req, res) => {
   const { url, folderId } = req.body;
 
@@ -72,7 +72,6 @@ app.post("/upload", async (req, res) => {
     return res.status(400).json({ success: false, error: "❌ חסר קישור להורדה" });
   }
 
-  // מחזירים תגובה מהירה ללקוח
   res.json({ success: true, message: "✅ הקישור התקבל, מתחילים בתהליך..." });
 
   try {
@@ -92,7 +91,6 @@ app.post("/upload", async (req, res) => {
       parents: [targetFolder],
     };
 
-    // הופכים את ה־Buffer לזרם
     const stream = Readable.from(buffer);
 
     const media = {
@@ -102,8 +100,9 @@ app.post("/upload", async (req, res) => {
 
     const uploadResponse = await drive.files.create({
       requestBody: fileMetadata,
-      media: media,
+      media,
       fields: "id, name",
+      supportsAllDrives: true,   // 🚩 חובה בדרייב שיתופי
     });
 
     console.log("✅ הועלה בהצלחה ל-Drive:", uploadResponse.data);
@@ -117,6 +116,3 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
 });
-
-
-
