@@ -41,11 +41,24 @@ async function uploadToDrive(filePath, fileName) {
   const response = await drive.files.create({
     resource: fileMetadata,
     media,
-    fields: "id, name, size, webViewLink",
-    supportsAllDrives: true, // ⬅️ תומך בכוננים שיתופיים
+    fields: "id, size, webViewLink",
+    supportsAllDrives: true,
   });
 
-  return response.data;
+  return { ...response.data, name: fileName };
+}
+
+// ----------------- חילוץ שם מקורי מה־Response -----------------
+function getFileNameFromResponse(response, url, timestamp) {
+  const disposition = response.headers.get("content-disposition");
+  if (disposition && disposition.includes("filename=")) {
+    const match = disposition.match(/filename\*?=(?:UTF-8'')?["']?([^"';]+)/i);
+    if (match && match[1]) {
+      return decodeURIComponent(match[1]);
+    }
+  }
+  // fallback רק אם אין שום Header
+  return path.basename(new URL(url).pathname) || `file-${timestamp}`;
 }
 
 // ----------------- פונקציה להורדה -----------------
@@ -53,19 +66,17 @@ async function handleDownload(url, res) {
   try {
     console.log("⏳ מזהה קישור:", url);
 
-    // האם זה יוטיוב?
     const isYouTube =
       url.includes("youtube.com") || url.includes("youtu.be");
 
-    // יצירת שם זמני
     const timestamp = Date.now();
-    const tmpFilePath = path.join(TMP_DIR, `${timestamp}.tmp`);
 
     if (isYouTube) {
       console.log("⬇️ הורדת YouTube...");
       const info = await ytdl.getInfo(url);
       const title = info.videoDetails.title.replace(/[^\w\s]/gi, "_");
-      const filePath = path.join(TMP_DIR, `${title}.mp4`);
+      const fileName = `${title}.mp4`;
+      const filePath = path.join(TMP_DIR, fileName);
 
       await new Promise((resolve, reject) => {
         ytdl(url, { quality: "highest" })
@@ -74,18 +85,10 @@ async function handleDownload(url, res) {
           .on("error", reject);
       });
 
-      const uploaded = await uploadToDrive(filePath, `${title}.mp4`);
+      const uploaded = await uploadToDrive(filePath, fileName);
       fs.unlinkSync(filePath);
 
-      return res.json({
-        success: true,
-        file: {
-          id: uploaded.id,
-          name: uploaded.name || `${title}.mp4`,
-          size: uploaded.size,
-          webViewLink: uploaded.webViewLink,
-        },
-      });
+      return res.json({ success: true, file: uploaded });
     } else {
       console.log("⬇️ הורדה רגילה...");
       const response = await fetch(url, {
@@ -99,8 +102,8 @@ async function handleDownload(url, res) {
         throw new Error("שגיאה בהורדה: " + response.statusText);
       }
 
-      const fileName =
-        path.basename(new URL(url).pathname) || `file-${timestamp}`;
+      // ✅ השם המקורי מתוך Header
+      const fileName = getFileNameFromResponse(response, url, timestamp);
       const filePath = path.join(TMP_DIR, fileName);
 
       const fileStream = fs.createWriteStream(filePath);
@@ -113,15 +116,7 @@ async function handleDownload(url, res) {
       const uploaded = await uploadToDrive(filePath, fileName);
       fs.unlinkSync(filePath);
 
-      return res.json({
-        success: true,
-        file: {
-          id: uploaded.id,
-          name: uploaded.name || fileName,
-          size: uploaded.size,
-          webViewLink: uploaded.webViewLink,
-        },
-      });
+      return res.json({ success: true, file: uploaded });
     }
   } catch (err) {
     console.error("❌ שגיאה:", err.message);
