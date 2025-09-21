@@ -1,88 +1,92 @@
 import express from "express";
 import bodyParser from "body-parser";
+import multer from "multer";
+import fs from "fs";
+import path from "path";
 import { google } from "googleapis";
-import fetch from "node-fetch";
-import { Readable } from "stream";
-import ytdl from "@distube/ytdl-core";   // 📌 שים לב – עברנו ל־distube
+import { v4 as uuidv4 } from "uuid";
+import ytdl from "@distube/ytdl-core";
 
 const app = express();
+const PORT = process.env.PORT || 10000;
+
 app.use(bodyParser.json());
 
-// הרשאות מה־Service Account
-const credentials = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT);
+// === הגדרות גוגל דרייב ===
 const auth = new google.auth.GoogleAuth({
-  credentials,
-  scopes: ["https://www.googleapis.com/auth/drive.file"],
+  credentials: JSON.parse(process.env.GOOGLE_SERVICE_KEY),
+  scopes: ["https://www.googleapis.com/auth/drive"]
 });
 const drive = google.drive({ version: "v3", auth });
 
-// דף בית
-app.get("/", (req, res) => {
-  res.send("🎉 השרת פעיל! שלח בקשה ל־/upload כדי להעלות קובץ ל־Drive.");
-});
+// === אחסון זמני ===
+const upload = multer({ dest: "uploads/" });
 
-// נקודת קצה להעלאה
+// === עוזר להעלאת קובץ לדרייב ===
+async function uploadToDrive(filePath, originalName, folderId) {
+  const fileMetadata = {
+    name: originalName,
+    parents: folderId ? [folderId] : []
+  };
+
+  const media = {
+    body: fs.createReadStream(filePath)
+  };
+
+  const res = await drive.files.create({
+    resource: fileMetadata,
+    media: media,
+    fields: "id, name, size"
+  });
+
+  return res.data;
+}
+
+// === הורדה מיוטיוב והעלאה לדרייב ===
 app.post("/upload", async (req, res) => {
-  const { url, folderId } = req.body;
-  if (!url) return res.status(400).json({ success: false, error: "❌ חסר קישור" });
-
   try {
-    let fileName = "file_" + Date.now();
-    let stream;
-    let mimeType = "application/octet-stream";
+    const { url, folderId } = req.body;
 
-    // בדיקה אם זה YouTube
+    if (!url) {
+      return res.status(400).json({ success: false, error: "Missing URL" });
+    }
+
     if (ytdl.validateURL(url)) {
-      console.log("⏳ מזהה קישור YouTube:", url);
+      console.log("📥 מתחיל הורדה מיוטיוב:", url);
 
       const info = await ytdl.getInfo(url);
-      fileName = `${info.videoDetails.title}.mp4`;
-      mimeType = "video/mp4";
+      const format = ytdl.chooseFormat(info.formats, { quality: "highestvideo" });
+      const ext = format.container || "mp4";
 
-      console.log("📥 מתחיל הורדה מ־YouTube...");
-      stream = ytdl(url, { quality: "highest" });
-    } else {
-      console.log("⏳ מוריד קובץ:", url);
+      const uniqueId = uuidv4();
+      const fileName = `${info.videoDetails.title.replace(/[^\w\s.-]/g, "_")}.${ext}`;
+      const filePath = path.resolve(`downloads/${uniqueId}-${fileName}`);
 
-      const response = await fetch(url, {
-    headers: {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36"
+      // הורדה
+      await new Promise((resolve, reject) => {
+        ytdl.downloadFromInfo(info, { format })
+          .pipe(fs.createWriteStream(filePath))
+          .on("finish", resolve)
+          .on("error", reject);
+      });
+
+      console.log("⬆️ מעלה לדרייב:", fileName);
+
+      const uploaded = await uploadToDrive(filePath, fileName, folderId);
+
+      fs.unlinkSync(filePath); // ניקוי
+
+      return res.json({ success: true, file: uploaded });
     }
-    });
 
-      if (!response.ok) throw new Error(`שגיאה בהורדה: ${response.statusText}`);
+    return res.status(400).json({ success: false, error: "URL לא תקין ל־YouTube" });
 
-      const buffer = Buffer.from(await response.arrayBuffer());
-      fileName = url.split("/").pop() || fileName;
-      mimeType = response.headers.get("content-type") || "application/octet-stream";
-      stream = Readable.from(buffer);
-    }
-
-    const targetFolder = folderId || process.env.GOOGLE_DRIVE_FOLDER_ID;
-
-    console.log("📤 מעלה ל־Drive...");
-    const uploadResponse = await drive.files.create({
-      requestBody: { name: fileName, parents: [targetFolder] },
-      media: { mimeType, body: stream },
-      fields: "id, name",
-      supportsAllDrives: true,
-    });
-
-    console.log("✅ הועלה בהצלחה:", uploadResponse.data);
-    res.json({
-      success: true,
-      message: "✅ הועלה בהצלחה ל־Drive",
-      file: uploadResponse.data,
-    });
   } catch (err) {
     console.error("❌ שגיאה:", err.message);
-    res.status(500).json({ success: false, error: err.message });
+    return res.status(500).json({ success: false, error: err.message });
   }
 });
 
-// מאזינים
-const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
 });
-
