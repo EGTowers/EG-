@@ -1,110 +1,140 @@
 import express from "express";
+import fetch from "node-fetch";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import { google } from "googleapis";
-import { pipeline } from "stream";
-import { promisify } from "util";
-import fetch from "node-fetch";
 import ytdl from "@distube/ytdl-core";
 
-const streamPipeline = promisify(pipeline);
 const app = express();
-const PORT = process.env.PORT || 3000;
+const port = process.env.PORT || 3000;
 
+app.use(express.json());
+
+// ----------------- הגדרות נתיבים -----------------
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// === Google Drive Client ===
+const TMP_DIR = path.join(__dirname, "tmp");
+if (!fs.existsSync(TMP_DIR)) fs.mkdirSync(TMP_DIR);
+
+const GOOGLE_SERVICE_ACCOUNT = process.env.GOOGLE_SERVICE_ACCOUNT;
+const GOOGLE_DRIVE_FOLDER_ID = process.env.GOOGLE_DRIVE_FOLDER_ID;
+
+// ----------------- חיבור לגוגל דרייב -----------------
 const auth = new google.auth.GoogleAuth({
-  credentials: JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT),
+  credentials: JSON.parse(GOOGLE_SERVICE_ACCOUNT),
   scopes: ["https://www.googleapis.com/auth/drive.file"],
 });
 const drive = google.drive({ version: "v3", auth });
 
-// === הורדה רגילה (stream) ===
-async function downloadFile(url, dest) {
-  const res = await fetch(url, {
-    headers: {
-      "User-Agent":
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
-    },
-  });
-
-  if (!res.ok) {
-    throw new Error(`שגיאה בהורדה: ${res.status} ${res.statusText}`);
-  }
-
-  await streamPipeline(res.body, fs.createWriteStream(dest));
-  return dest;
-}
-
-// === הורדה מיוטיוב (stream) ===
-async function downloadYouTube(url, dest) {
-  const video = ytdl(url, { quality: "highest" });
-  await streamPipeline(video, fs.createWriteStream(dest));
-  return dest;
-}
-
-// === העלאה ל־Google Drive ===
+// ----------------- פונקציה להעלאה לדרייב -----------------
 async function uploadToDrive(filePath, fileName) {
   const fileMetadata = {
     name: fileName,
-    parents: [process.env.GOOGLE_DRIVE_FOLDER_ID],
+    parents: [GOOGLE_DRIVE_FOLDER_ID],
   };
   const media = {
     body: fs.createReadStream(filePath),
   };
-
-  const res = await drive.files.create({
+  const response = await drive.files.create({
     resource: fileMetadata,
     media,
-    fields: "id, webViewLink, webContentLink",
+    fields: "id, name, size",
   });
-
-  return res.data;
+  return response.data;
 }
 
-// === נקודת API ראשית ===
-app.get("/download", async (req, res) => {
-  const { url } = req.query;
-
-  if (!url) {
-    return res.status(400).json({ success: false, error: "חסר פרמטר url" });
-  }
-
-  const tempFile = path.join(__dirname, `temp_${Date.now()}`);
-
+// ----------------- פונקציה להורדה -----------------
+async function handleDownload(url, res) {
   try {
-    let filePath;
-    let fileName;
+    console.log("⏳ מזהה קישור:", url);
 
-    if (ytdl.validateURL(url)) {
-      console.log("⏳ מזהה קישור YouTube:", url);
-      fileName = `youtube_${Date.now()}.mp4`;
-      filePath = await downloadYouTube(url, tempFile);
+    // האם זה יוטיוב?
+    const isYouTube =
+      url.includes("youtube.com") || url.includes("youtu.be");
+
+    // יצירת שם זמני
+    const timestamp = Date.now();
+    const tmpFilePath = path.join(TMP_DIR, `${timestamp}.tmp`);
+
+    if (isYouTube) {
+      console.log("⬇️ הורדת YouTube...");
+      const info = await ytdl.getInfo(url);
+      const title = info.videoDetails.title.replace(/[^\w\s]/gi, "_");
+      const filePath = path.join(TMP_DIR, `${title}.mp4`);
+
+      await new Promise((resolve, reject) => {
+        ytdl(url, { quality: "highest" })
+          .pipe(fs.createWriteStream(filePath))
+          .on("finish", resolve)
+          .on("error", reject);
+      });
+
+      const uploaded = await uploadToDrive(filePath, `${title}.mp4`);
+      fs.unlinkSync(filePath);
+
+      return res.json({ success: true, uploaded });
     } else {
-      console.log("⏳ מזהה קישור רגיל:", url);
-      fileName = path.basename(new URL(url).pathname) || `file_${Date.now()}`;
-      filePath = await downloadFile(url, tempFile);
+      console.log("⬇️ הורדה רגילה...");
+      const response = await fetch(url, {
+        headers: {
+          "User-Agent":
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0 Safari/537.36",
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error("שגיאה בהורדה: " + response.statusText);
+      }
+
+      const fileName =
+        path.basename(new URL(url).pathname) || `file-${timestamp}`;
+      const filePath = path.join(TMP_DIR, fileName);
+
+      const fileStream = fs.createWriteStream(filePath);
+      await new Promise((resolve, reject) => {
+        response.body.pipe(fileStream);
+        response.body.on("error", reject);
+        fileStream.on("finish", resolve);
+      });
+
+      const uploaded = await uploadToDrive(filePath, fileName);
+      fs.unlinkSync(filePath);
+
+      return res.json({ success: true, uploaded });
     }
-
-    const driveFile = await uploadToDrive(filePath, fileName);
-
-    fs.unlinkSync(filePath); // מנקה קובץ זמני
-
-    res.json({
-      success: true,
-      fileId: driveFile.id,
-      webViewLink: driveFile.webViewLink,
-      webContentLink: driveFile.webContentLink,
-    });
   } catch (err) {
     console.error("❌ שגיאה:", err.message);
-    res.status(500).json({ success: false, error: err.message });
+    return res
+      .status(500)
+      .json({ success: false, error: err.message });
   }
+}
+
+// ----------------- GET /download -----------------
+app.get("/download", async (req, res) => {
+  const { url } = req.query;
+  if (!url) {
+    return res
+      .status(400)
+      .json({ success: false, error: "חסר פרמטר url" });
+  }
+  await handleDownload(url, res);
 });
 
-app.listen(PORT, () => {
-  console.log(`🚀 השרת רץ על פורט ${PORT}`);
+// ----------------- POST /upload -----------------
+app.post("/upload", async (req, res) => {
+  const { url } = req.body;
+  if (!url) {
+    return res
+      .status(400)
+      .json({ success: false, error: "חסר פרמטר url" });
+  }
+  await handleDownload(url, res);
+});
+
+// ----------------- הפעלת שרת -----------------
+app.listen(port, () => {
+  console.log(`🚀 Server running on port ${port}`);
 });
