@@ -1,4 +1,3 @@
-// server.js
 import express from "express";
 import fetch from "node-fetch";
 import fs from "fs";
@@ -14,8 +13,13 @@ const app = express();
 app.use(express.json());
 
 // === Google Drive Auth ===
+const serviceAccount = process.env.GOOGLE_SERVICE_ACCOUNT;
+if (!serviceAccount) {
+  throw new Error("❌ חסר משתנה GOOGLE_SERVICE_ACCOUNT בסביבה!");
+}
+
 const auth = new google.auth.GoogleAuth({
-  credentials: JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT),
+  credentials: JSON.parse(serviceAccount),
   scopes: ["https://www.googleapis.com/auth/drive.file"],
 });
 const drive = google.drive({ version: "v3", auth });
@@ -63,6 +67,7 @@ async function uploadToDrive(filePath, fileName) {
     resource: fileMetadata,
     media,
     fields: "id, name, size",
+    supportsAllDrives: true,
   });
 
   return file.data;
@@ -78,7 +83,10 @@ app.post("/upload", async (req, res) => {
 
     console.log(`⏳ מתחיל הורדה: ${url}`);
 
-    const ext = url.includes("youtube.com") || url.includes("youtu.be") ? ".mp4" : path.extname(url) || ".bin";
+    const ext =
+      url.includes("youtube.com") || url.includes("youtu.be")
+        ? ".mp4"
+        : path.extname(url) || ".bin";
     const fileName = `download_${Date.now()}${ext}`;
     const tempPath = path.join(__dirname, fileName);
 
