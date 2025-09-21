@@ -44,7 +44,12 @@ app.post("/upload", async (req, res) => {
     } else {
       console.log("⏳ מוריד קובץ:", url);
 
-      const response = await fetch(url);
+      const response = await fetch(url, {
+    headers: {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36"
+    }
+    });
+
       if (!response.ok) throw new Error(`שגיאה בהורדה: ${response.statusText}`);
 
       const buffer = Buffer.from(await response.arrayBuffer());
@@ -80,3 +85,4 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
 });
+
