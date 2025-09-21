@@ -14,7 +14,7 @@ app.use(bodyParser.json());
 
 // === הגדרות גוגל דרייב ===
 const auth = new google.auth.GoogleAuth({
-  credentials: JSON.parse(process.env.GOOGLE_SERVICE_KEY),
+  credentials: JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT),
   scopes: ["https://www.googleapis.com/auth/drive"]
 });
 const drive = google.drive({ version: "v3", auth });
@@ -90,3 +90,4 @@ app.post("/upload", async (req, res) => {
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
 });
+
