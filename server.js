@@ -1,40 +1,28 @@
 import express from "express";
-import fetch from "node-fetch";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import { google } from "googleapis";
+import { pipeline } from "stream";
+import { promisify } from "util";
+import fetch from "node-fetch";
 import ytdl from "@distube/ytdl-core";
+
+const streamPipeline = promisify(pipeline);
+const app = express();
+const PORT = process.env.PORT || 3000;
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const app = express();
 
-app.use(express.json());
-
-// === Google Drive Auth ===
-const serviceAccount = process.env.GOOGLE_SERVICE_ACCOUNT;
-if (!serviceAccount) {
-  throw new Error("❌ חסר משתנה GOOGLE_SERVICE_ACCOUNT בסביבה!");
-}
-
+// === Google Drive Client ===
 const auth = new google.auth.GoogleAuth({
-  credentials: JSON.parse(serviceAccount),
+  credentials: JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT),
   scopes: ["https://www.googleapis.com/auth/drive.file"],
 });
 const drive = google.drive({ version: "v3", auth });
 
-// === פונקציה להורדה מיוטיוב ===
-async function downloadYouTube(url, dest) {
-  return new Promise((resolve, reject) => {
-    const stream = ytdl(url, { quality: "highest" })
-      .pipe(fs.createWriteStream(dest));
-    stream.on("finish", () => resolve(dest));
-    stream.on("error", reject);
-  });
-}
-
-// === פונקציה להורדה רגילה עם User-Agent ===
+// === הורדה רגילה (stream) ===
 async function downloadFile(url, dest) {
   const res = await fetch(url, {
     headers: {
@@ -47,76 +35,76 @@ async function downloadFile(url, dest) {
     throw new Error(`שגיאה בהורדה: ${res.status} ${res.statusText}`);
   }
 
-  const buffer = await res.arrayBuffer();
-  fs.writeFileSync(dest, Buffer.from(buffer));
+  await streamPipeline(res.body, fs.createWriteStream(dest));
   return dest;
 }
 
-// === פונקציה להעלאה לדרייב ===
+// === הורדה מיוטיוב (stream) ===
+async function downloadYouTube(url, dest) {
+  const video = ytdl(url, { quality: "highest" });
+  await streamPipeline(video, fs.createWriteStream(dest));
+  return dest;
+}
+
+// === העלאה ל־Google Drive ===
 async function uploadToDrive(filePath, fileName) {
   const fileMetadata = {
     name: fileName,
     parents: [process.env.GOOGLE_DRIVE_FOLDER_ID],
   };
   const media = {
-    mimeType: "application/octet-stream",
     body: fs.createReadStream(filePath),
   };
 
-  const file = await drive.files.create({
+  const res = await drive.files.create({
     resource: fileMetadata,
     media,
-    fields: "id, name, size",
-    supportsAllDrives: true,
+    fields: "id, webViewLink, webContentLink",
   });
 
-  return file.data;
+  return res.data;
 }
 
 // === נקודת API ראשית ===
-app.post("/upload", async (req, res) => {
+app.get("/download", async (req, res) => {
+  const { url } = req.query;
+
+  if (!url) {
+    return res.status(400).json({ success: false, error: "חסר פרמטר url" });
+  }
+
+  const tempFile = path.join(__dirname, `temp_${Date.now()}`);
+
   try {
-    const { url } = req.body;
-    if (!url) {
-      return res.status(400).json({ success: false, error: "לא סופק קישור" });
-    }
+    let filePath;
+    let fileName;
 
-    console.log(`⏳ מתחיל הורדה: ${url}`);
-
-    const ext =
-      url.includes("youtube.com") || url.includes("youtu.be")
-        ? ".mp4"
-        : path.extname(url) || ".bin";
-    const fileName = `download_${Date.now()}${ext}`;
-    const tempPath = path.join(__dirname, fileName);
-
-    // הורדה
     if (ytdl.validateURL(url)) {
-      await downloadYouTube(url, tempPath);
+      console.log("⏳ מזהה קישור YouTube:", url);
+      fileName = `youtube_${Date.now()}.mp4`;
+      filePath = await downloadYouTube(url, tempFile);
     } else {
-      await downloadFile(url, tempPath);
+      console.log("⏳ מזהה קישור רגיל:", url);
+      fileName = path.basename(new URL(url).pathname) || `file_${Date.now()}`;
+      filePath = await downloadFile(url, tempFile);
     }
 
-    // העלאה לדרייב
-    const uploaded = await uploadToDrive(tempPath, fileName);
+    const driveFile = await uploadToDrive(filePath, fileName);
 
-    console.log(`✅ הועלה לדרייב: ${uploaded.name} (${uploaded.size} bytes)`);
+    fs.unlinkSync(filePath); // מנקה קובץ זמני
 
-    // מחיקה אחרי העלאה
-    fs.unlinkSync(tempPath);
-
-    return res.json({
+    res.json({
       success: true,
-      file: uploaded,
+      fileId: driveFile.id,
+      webViewLink: driveFile.webViewLink,
+      webContentLink: driveFile.webContentLink,
     });
   } catch (err) {
     console.error("❌ שגיאה:", err.message);
-    return res.status(500).json({ success: false, error: err.message });
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 
-// === הפעלה ===
-const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
+  console.log(`🚀 השרת רץ על פורט ${PORT}`);
 });
