@@ -37,13 +37,33 @@ async function uploadToDrive(filePath, fileName) {
   const media = {
     body: fs.createReadStream(filePath),
   };
+
   const response = await drive.files.create({
     resource: fileMetadata,
     media,
-    fields: "id, name, size",
+    fields: "id, name, size, webViewLink",
+    supportsAllDrives: true,       // ⬅️ תומך בכוננים שיתופיים
   });
+
   return response.data;
 }
+
+
+// async function uploadToDrive(filePath, fileName) {
+//   const fileMetadata = {
+//     name: fileName,
+//     parents: [GOOGLE_DRIVE_FOLDER_ID],
+//   };
+//   const media = {
+//     body: fs.createReadStream(filePath),
+//   };
+//   const response = await drive.files.create({
+//     resource: fileMetadata,
+//     media,
+//     fields: "id, name, size",
+//   });
+//   return response.data;
+// }
 
 // ----------------- פונקציה להורדה -----------------
 async function handleDownload(url, res) {
@@ -138,3 +158,4 @@ app.post("/upload", async (req, res) => {
 app.listen(port, () => {
   console.log(`🚀 Server running on port ${port}`);
 });
+
