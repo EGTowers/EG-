@@ -42,28 +42,11 @@ async function uploadToDrive(filePath, fileName) {
     resource: fileMetadata,
     media,
     fields: "id, name, size, webViewLink",
-    supportsAllDrives: true,       // ⬅️ תומך בכוננים שיתופיים
+    supportsAllDrives: true, // ⬅️ תומך בכוננים שיתופיים
   });
 
   return response.data;
 }
-
-
-// async function uploadToDrive(filePath, fileName) {
-//   const fileMetadata = {
-//     name: fileName,
-//     parents: [GOOGLE_DRIVE_FOLDER_ID],
-//   };
-//   const media = {
-//     body: fs.createReadStream(filePath),
-//   };
-//   const response = await drive.files.create({
-//     resource: fileMetadata,
-//     media,
-//     fields: "id, name, size",
-//   });
-//   return response.data;
-// }
 
 // ----------------- פונקציה להורדה -----------------
 async function handleDownload(url, res) {
@@ -94,7 +77,15 @@ async function handleDownload(url, res) {
       const uploaded = await uploadToDrive(filePath, `${title}.mp4`);
       fs.unlinkSync(filePath);
 
-      return res.json({ success: true, uploaded });
+      return res.json({
+        success: true,
+        file: {
+          id: uploaded.id,
+          name: uploaded.name || `${title}.mp4`,
+          size: uploaded.size,
+          webViewLink: uploaded.webViewLink,
+        },
+      });
     } else {
       console.log("⬇️ הורדה רגילה...");
       const response = await fetch(url, {
@@ -122,7 +113,15 @@ async function handleDownload(url, res) {
       const uploaded = await uploadToDrive(filePath, fileName);
       fs.unlinkSync(filePath);
 
-      return res.json({ success: true, uploaded });
+      return res.json({
+        success: true,
+        file: {
+          id: uploaded.id,
+          name: uploaded.name || fileName,
+          size: uploaded.size,
+          webViewLink: uploaded.webViewLink,
+        },
+      });
     }
   } catch (err) {
     console.error("❌ שגיאה:", err.message);
@@ -158,4 +157,3 @@ app.post("/upload", async (req, res) => {
 app.listen(port, () => {
   console.log(`🚀 Server running on port ${port}`);
 });
-
